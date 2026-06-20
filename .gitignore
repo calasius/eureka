@@ -1,0 +1,12 @@
+# Generated datasets (regenerate with `python -m rule_induction.generate`)
+/data/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Persistent abstraction store: runtime state with its OWN nested git repo, so it
+# can't be embedded cleanly in the parent. Regenerate by re-running the
+# inducer/investigator (the arbiter re-promotes accepted rules).
+/library/
