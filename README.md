@@ -288,6 +288,50 @@ Three properties make it different from a generic classifier:
 auditable rule. **Poor fit:** continuous regression, perception (vision/audio), or
 cases where a black-box predictor's accuracy is all you need and *why* doesn't matter.
 
+## Scaling to real logs (large files, Elasticsearch / OpenSearch)
+
+Two different problems — **size** and **source** — and the architecture already
+answers the first.
+
+**You never need the whole log.** The method is *statistical*, not exhaustive: a
+rule is validated by compression on a **holdout sample**, and the statistical power
+comes from a few thousand cases, not millions. If a rule is real, you recover it
+(with the same high `bits_saved`) from a 5k–20k sample as from 50M events. More
+data only tightens the confidence interval; it doesn't change the rule. So a giant
+log is handled by **sampling**, not by loading the universe.
+
+Handling **size**, from least to most effort:
+
+- **Stratified sampling** (the default): take *N* cases while preserving rare
+  outcomes (a 2%-rate `block` class is wiped out by uniform sampling), then write a
+  bounded `train.jsonl` / `test.jsonl`.
+- **Summaries over dumps:** to propose, the agent doesn't print millions of traces
+  — `present.summarize` already yields the type histogram, attribute cardinalities,
+  and outcome distribution; show *K* example traces plus those aggregates.
+- **Streaming arbiter** (an extension): MDL is a *sum over cases* and prediction is
+  *per case*, so the holdout can be scored in a single pass without holding it all
+  in memory — for when you really want to validate on the full corpus.
+
+Handling **source** — Elasticsearch / OpenSearch (or any store): write an
+**ingestion adapter** (an *extractor*) that emits the same `--dataset` format
+(`apilog.py` shows the target shape — it just *generates* instead of *extracts*):
+
+1. **Stream, don't dump.** Page with **PIT + `search_after`** (or `scroll`), sorted
+   by `(correlation_id, @timestamp)` — never a huge `from`/`size`.
+2. **Group into cases** by a **correlation key** — `trace.id`, `session.id`, or
+   `client_ip` + a time window. Discover unique keys with a **composite aggregation**.
+3. **Map document → event:** with ECS fields it's direct —
+   `http.request.method` + `url.path` → the event type token;
+   `http.response.status_code`, latency, etc. → `attrs`.
+4. **Label the outcome per case** from an existing field (`event.outcome`,
+   `action`, `decision`) or derive it.
+5. **Field hygiene (critical):** drop high-cardinality fields (IDs, exact
+   timestamps) at ingestion — they bloat the view and tempt overfitting.
+6. **Stratified-sample** and write `train.jsonl` / `test.jsonl` with the holdout split.
+
+Bonus: push part of the *view* server-side as ES/OpenSearch **aggregations** (terms
+over event types, cardinalities) so you don't even pull the data to summarise it.
+
 ## Layout
 
 ```
