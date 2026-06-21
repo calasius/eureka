@@ -14,6 +14,92 @@ auditable rules** that generated them. See
 > the accumulating library, and the [primitive-invention loop](#inventing-new-primitives--abstraction-that-earns-its-keep)
 > below are all that one idea, turned into running code you can put a number on.
 
+## New to this? Start here
+
+No background needed. This section builds every idea from scratch; the rest of the
+README then goes deeper.
+
+### The problem, in one picture
+
+Imagine a **bouncer** at a club who lets some people in and turns others away. You
+can't ask them the rule — you can only *watch*. After a few hundred decisions, could
+you write down the exact policy they're using?
+
+That is the whole problem. Given a stream of things-that-happened, each ending in an
+outcome, **recover the hidden rule** that decides the outcome — and write it as
+something you can read and run, not a black box.
+
+### What the data looks like
+
+Each **case** is a short sequence of **events** that ends in an **outcome**. For the
+bouncer:
+
+```
+[arrived_in_a_group, wore_sneakers, showed_id]   ->  rejected
+[arrived_alone,      wore_boots,    showed_id]   ->  allowed
+[arrived_in_a_group, wore_boots,    no_id]       ->  rejected
+```
+
+You feed the system hundreds of these. It hands back the rule — e.g. *"rejected if
+no ID, or if sneakers; allowed otherwise"* — as a small, legible program.
+
+### Two players: a guesser and a referee
+
+The system has two halves that keep each other honest:
+
+- **The guesser** (an AI — here, the Claude agent) looks at the examples and
+  **proposes** a candidate rule. AI is good at the creative leap: *"maybe it's about
+  the shoes."*
+- **The referee** (plain, fixed Python) **checks** that guess against examples the
+  guesser was *not allowed to see*, and gives a hard yes/no.
+
+The guesser never grades its own work. That single rule — *propose vs. verify* — is
+why the system can't fool itself.
+
+### The twist: reward *compression*, not being right
+
+Here is the non-obvious part, and the heart of the project.
+
+A cheater could get every answer right by just **memorising** the examples — a giant
+lookup table: "person #1 → rejected, person #2 → allowed, …". It's 100% accurate and
+explains *nothing*.
+
+So the referee doesn't ask *"did you get it right?"* It asks *"is your rule **shorter
+than the data it explains**?"* — measured in **bits** (a bit = one yes/no question).
+A real rule (*"no ID → out"*) is a few words that cover thousands of cases: huge
+compression. A memorised lookup table is as long as the data itself: zero
+compression. **Compression is the test that separates understanding from
+memorising** — and on data with *no* rule at all, nothing compresses, so the honest
+answer is *"there is no rule"* instead of a made-up one.
+
+> Rule of thumb: the shortest description that still predicts cases it hasn't seen is
+> the one most likely to be the *real* rule. That's [Occam's razor](https://en.wikipedia.org/wiki/Occam%27s_razor),
+> turned into a number.
+
+### What "abstraction" means here (and why reuse is the point)
+
+An **abstraction** is just a reusable idea — *"matched brackets"*, *"more A's than
+B's"*, *"logged in before acting"*. The system can **invent** one when its built-in
+vocabulary isn't enough, and **store** it. The beautiful part, measured in bits: an
+abstraction is **expensive to invent once, then nearly free to reuse**. So an idea
+*earns its place by being reused* — which is exactly how people build up concepts.
+
+### Mini-glossary
+
+| Term | In plain words |
+|------|----------------|
+| **event / case** | one thing that happened / one full sequence ending in an outcome |
+| **outcome** | the label to explain (`allowed`/`rejected`, `accept`/`reject`, …) |
+| **holdout** | examples kept hidden from the guesser, used only to grade it (so it can't cheat) |
+| **bits / MDL** | the size of a description; fewer bits = more compression = better rule |
+| **`bits_saved`** | how much shorter the data gets with the rule vs. without it — the score |
+| **primitive** | a reusable building-block idea, stored in the library |
+| **the library** | the growing, versioned collection of abstractions the system has earned |
+
+With those seven words, the rest of the README is readable. The next sections show
+the machinery, the math behind the bits, and worked examples — including a hard one
+where the system invents a grammar from scratch.
+
 ## How the skills work together
 
 Three roles, one rule between them: **the agent proposes, the deterministic code
