@@ -69,6 +69,39 @@ except Exception as exc:  # candidate is hostile-until-clean: any error => dirty
 """
 
 
+# Trusted wrapper for the agent's TRAIN-ONLY scratchpad: it execs an `analyze`
+# function and runs it over the train cases handed in. Same lockdown as _CHILD, so
+# the analysis code has no `open`/`__import__` — it physically cannot read
+# test.jsonl or ground_truth.json; it only ever sees the train data passed in.
+_CHILD_ANALYZE = r"""
+import sys, json
+
+_ALLOWED = [
+    "abs", "all", "any", "bool", "dict", "divmod", "enumerate", "filter",
+    "float", "frozenset", "int", "isinstance", "issubclass", "len", "list",
+    "map", "max", "min", "next", "pow", "range", "reversed", "round", "set",
+    "sorted", "str", "sum", "tuple", "zip", "True", "False", "None",
+    "ValueError", "KeyError", "IndexError", "TypeError", "Exception",
+]
+import builtins as _b
+_safe = {n: getattr(_b, n) for n in _ALLOWED if hasattr(_b, n)}
+
+data = json.load(sys.stdin)
+source, train = data["source"], data["train"]
+glb = {"__builtins__": _safe}
+try:
+    exec(source, glb)
+    analyze = glb.get("analyze")
+    if not callable(analyze):
+        raise ValueError("scratchpad must define analyze(train)")
+    result = analyze(train)
+    json.dumps(result)  # must be JSON-serialisable
+    sys.stdout.write(json.dumps({"ok": True, "result": result}))
+except Exception as exc:
+    sys.stdout.write(json.dumps({"ok": False, "error": repr(exc)}))
+"""
+
+
 class SandboxError(Exception):
     """The candidate did not return a clean run (timeout, crash, bad output)."""
 
@@ -85,22 +118,14 @@ def _preexec(cpu_s: int, mem_bytes: int):
     return _apply
 
 
-def run_code(source: str, cases: List[Dict[str, Any]], *,
-             timeout_s: float = DEFAULT_TIMEOUT_S,
-             mem_mb: int = DEFAULT_MEM_MB,
-             cpu_s: int = DEFAULT_CPU_S) -> List[Any]:
-    """Run ``predict`` over ``cases`` in the sandbox; return predictions.
-
-    Raises ``SandboxError`` on timeout, non-zero exit, memory/cpu kill, malformed
-    output, or any exception inside the candidate. Callers must treat that as an
-    automatic rejection of the hypothesis.
-    """
-    payload = json.dumps({"source": source, "cases": cases})
+def _run_sandboxed(child: str, payload: Dict[str, Any], *,
+                   timeout_s: float, mem_mb: int, cpu_s: int) -> Dict[str, Any]:
+    """Run one locked-down child over a JSON payload; return its parsed result dict."""
     preexec = _preexec(cpu_s, mem_mb * 1024 * 1024) if hasattr(os, "fork") else None
     try:
         proc = subprocess.run(
-            [sys.executable, "-I", "-S", "-B", "-c", _CHILD],
-            input=payload,
+            [sys.executable, "-I", "-S", "-B", "-c", child],
+            input=json.dumps(payload),
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -124,7 +149,36 @@ def run_code(source: str, cases: List[Dict[str, Any]], *,
         raise SandboxError(f"unparseable output: {out[:200]}")
     if not result.get("ok"):
         raise SandboxError(f"candidate raised: {result.get('error')}")
+    return result
+
+
+def run_code(source: str, cases: List[Dict[str, Any]], *,
+             timeout_s: float = DEFAULT_TIMEOUT_S,
+             mem_mb: int = DEFAULT_MEM_MB,
+             cpu_s: int = DEFAULT_CPU_S) -> List[Any]:
+    """Run ``predict`` over ``cases`` in the sandbox; return predictions.
+
+    Raises ``SandboxError`` on timeout, non-zero exit, memory/cpu kill, malformed
+    output, or any exception inside the candidate. Callers must treat that as an
+    automatic rejection of the hypothesis.
+    """
+    result = _run_sandboxed(_CHILD, {"source": source, "cases": cases},
+                            timeout_s=timeout_s, mem_mb=mem_mb, cpu_s=cpu_s)
     preds = result["predictions"]
     if len(preds) != len(cases):
         raise SandboxError("prediction count mismatch")
     return preds
+
+
+def run_analysis(source: str, train: List[Dict[str, Any]], *,
+                 timeout_s: float = DEFAULT_TIMEOUT_S,
+                 mem_mb: int = DEFAULT_MEM_MB,
+                 cpu_s: int = DEFAULT_CPU_S) -> Any:
+    """Run the agent's ``analyze(train)`` scratchpad; return its JSON-serialisable result.
+
+    The analysis code is sandboxed exactly like a hypothesis: no file access, so it
+    can read only the train cases handed in — never test.jsonl or ground_truth.json.
+    """
+    result = _run_sandboxed(_CHILD_ANALYZE, {"source": source, "train": train},
+                            timeout_s=timeout_s, mem_mb=mem_mb, cpu_s=cpu_s)
+    return result["result"]

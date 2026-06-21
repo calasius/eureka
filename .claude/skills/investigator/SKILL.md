@@ -67,8 +67,13 @@ python -m rule_induction.present --data data --level level5 --seed 0
 
 ## The loop
 
-1. **Read** the train view above: the traces, the event vocabulary, the
-   attributes, the label distribution.
+1. **Read** the train view, then **compute** — don't just eyeball. Run analysis
+   code over the train split to test conjectures and characterise residuals
+   (sandboxed and **train-only**: it cannot read `test.jsonl` or `ground_truth.json`):
+   ```bash
+   python -m rule_induction.explore --dataset <dir> --code scratch.py   # defines analyze(train)
+   ```
+   e.g. *"is max nesting depth always 3 for accepts?"* is one `analyze(train)` away.
 2. **Propose** a hypothesis with a deliberate prior (see below). Write it as JSON:
    - a symbolic **rule** using the grammar
      (`marker`, `typed_successor`, `count_at_least`, `attr_eq`, `DL_decision_list`), or
@@ -125,6 +130,8 @@ search never finds.
 
 - **Method/judgment (prose):** this file — you follow it.
 - **Reading surface:** `rule_induction/present.py` (train-only view + residuals).
+- **Scratchpad:** `rule_induction/explore.py` (run `analyze(train)` analysis code —
+  sandboxed, train-only; the smarter-proposer instrument).
 - **Verifier:** `rule_induction/arbiter.py` (MDL + sandbox on holdout) — unchanged;
   it judges your proposals exactly as it judges the inducer's.
 - **Shared memory:** `rule_induction/librarian.py` (the git-versioned store).

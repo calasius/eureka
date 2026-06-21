@@ -526,6 +526,7 @@ rule_induction/          # core library (stdlib only)
   metrics.py             # ground-truth checks (rule recovery, hallucination)
   evaluate.py            # benchmark harness + CLI (python -m rule_induction.evaluate)
   present.py             # investigator's train-only view + residuals (the agent reads this)
+  explore.py             # train-only scratchpad: run analyze(train) code, sandboxed (smarter proposer)
   librarian.py           # the persistent store + CLI (python -m rule_induction.librarian)
   demo_invent.py         # demo: invent a primitive, then reuse it cheaply (two-part MDL)
   demo_grammar_transfer.py # demo: a hard grammar invented once, transferred across alphabets
