@@ -148,6 +148,11 @@ class Librarian:
             raise KeyError(f"no library entry {entry_id!r}")
         return self._read_json(path)
 
+    def known_primitive_names(self) -> frozenset:
+        """The invented predicates already in the library — the shared vocabulary
+        a composed hypothesis can reference for only a pointer's worth of bits."""
+        return frozenset(r["name"] for r in self.list(kind="primitive"))
+
     # ----------------------------- validation ----------------------------- #
     @staticmethod
     def normalize(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,8 +161,8 @@ class Librarian:
         missing = [k for k in required if not entry.get(k)]
         if missing:
             raise ValueError(f"entry missing required fields: {missing}")
-        if entry["kind"] not in ("rule", "function"):
-            raise ValueError("kind must be 'rule' or 'function'")
+        if entry["kind"] not in ("rule", "function", "primitive"):
+            raise ValueError("kind must be 'rule', 'function', or 'primitive'")
         mdl = entry.get("mdl") or {}
         if "bits_saved" not in mdl:
             raise ValueError("entry.mdl.bits_saved is required (the compression gain on holdout)")

@@ -7,6 +7,13 @@ auditable rules** that generated them. See
 > Honesty anchor: the LLM **proposes**; deterministic code **verifies**. Rules
 > are rewarded for **compression (MDL) on holdout**, not accuracy on seen data.
 
+> **Why this exists.** It started from one question — *how do we build
+> abstractions?* Everything here is an attempt to make that concrete and
+> measurable: an abstraction is something that lets you describe the world in
+> **fewer bits**, and it **earns its place by being reused**. The honesty anchor,
+> the accumulating library, and the [primitive-invention loop](#inventing-new-primitives--abstraction-that-earns-its-keep)
+> below are all that one idea, turned into running code you can put a number on.
+
 ## How the skills work together
 
 Three roles, one rule between them: **the agent proposes, the deterministic code
@@ -160,6 +167,51 @@ description that still predicts the *unseen* data is the one most likely to be t
 real rule — so "did it compress?" is a far harder and more honest test than "did
 it get the right answer?".
 
+## Inventing new primitives — abstraction that earns its keep
+
+This is the part closest to the original question. The fixed grammar (`marker`,
+`typed_successor`, `count_at_least`, …) lets the agent *recombine* a given
+vocabulary. But the deepest move in building abstractions is **inventing the
+vocabulary itself** — coining a new predicate when nothing existing compresses the
+data. Eureka does this with a **composed hypothesis**: it carries its own
+freshly-written predicate plus a decision list over it, scored by a **two-part
+code**:
+
+```
+L_program = full description length of each NEW primitive
+          + a pointer's worth of bits for each primitive ALREADY in the library
+          + atoms(decision list)
+```
+
+Introducing a primitive pays its whole length **once**; once it is in the library
+it is shared vocabulary, so later hypotheses pay only a pointer. That is the idea
+made quantitative: **a good abstraction is expensive to invent and cheap to reuse —
+so it only becomes a bargain once it *is* reused.**
+
+The demo (`python -m rule_induction.demo_invent`) runs it on two datasets with the
+*same abstract structure in different vocabularies* — outcome by the sign of
+(#up − #down), then (#win − #loss). The fixed grammar's `count_at_least` compares a
+count to a *constant*, so it cannot express "more A than B"; the invented
+`count_gt(events, a, b)` can:
+
+```
+A · fixed grammar (count vs constant)  : acc 0.69   bits_saved +248   ← cannot capture it
+A · INVENT count_gt (new primitive)    : acc 1.00   bits_saved +530   [L_program 358]  ✅ promoted
+B · REUSE count_gt (now shared vocab)  : acc 1.00   bits_saved +823   [L_program  60]
+```
+
+Inventing cost 358 program-bits; reusing cost only 60 — **298 bits saved by having
+the abstraction** — and it transferred across vocabularies on its own (analogy +
+invention, both verified blind on the holdout).
+
+> **Honest scope.** This *demonstrates the principle and the accounting* — how an
+> abstraction becomes cheap through reuse, measured in bits. It is not yet the full
+> claim: here the primitive's source is supplied (in the complete system the agent
+> proposes it from the residuals), and the transfer is a single illustration, not a
+> measured distribution. Turning the demo into a real *experiment* means inventing
+> primitives without being handed them and sweeping over a family of held-out tasks
+> — the DreamCoder-style design.
+
 ## What's built so far
 
 Following the plan's build order (Section 8), the two foundations are in place:
@@ -171,6 +223,7 @@ Following the plan's build order (Section 8), the two foundations are in place:
 | **Arbiter** | Skill 2 — MDL scorer + sandbox + holdout | ✅ built | `.claude/skills/arbiter/`, `rule_induction/{mdl,sandbox,arbiter,metrics}.py` |
 | **Inducer** | Skill 1 — orchestrator (Mechanisms 1–3) | ✅ built | `.claude/skills/inducer/`, `rule_induction/inducer.py` |
 | **Investigator (multi-agent)** | rival investigators + analogy (Mech. 4) — *the LLM is the agent* | ✅ built | `.claude/skills/investigator/`, `rule_induction/present.py` |
+| **Primitive invention** | [coin a new predicate when the grammar can't (two-part MDL)](#inventing-new-primitives--abstraction-that-earns-its-keep) | ✅ demo | `rule_induction/{primitives,demo_invent}.py` |
 
 ### Validated result profile
 
@@ -345,11 +398,13 @@ rule_induction/          # core library (stdlib only)
   mdl.py                 # MDL scorer (prequential plug-in code, holdout)
   sandbox.py             # hostile-until-clean runner for code-hypotheses
   arbiter.py             # the arbiter + CLI (python -m rule_induction.arbiter)
+  primitives.py          # invented primitives + two-part MDL (composed hypotheses)
   inducer.py             # the inducer + CLI (python -m rule_induction.inducer)
   metrics.py             # ground-truth checks (rule recovery, hallucination)
   evaluate.py            # benchmark harness + CLI (python -m rule_induction.evaluate)
   present.py             # investigator's train-only view + residuals (the agent reads this)
   librarian.py           # the persistent store + CLI (python -m rule_induction.librarian)
+  demo_invent.py         # demo: invent a primitive, then reuse it cheaply (two-part MDL)
 .claude/skills/
   synthetic-data-generator/SKILL.md
   arbiter/SKILL.md

@@ -31,7 +31,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import mdl, sandbox
+from . import mdl, primitives, sandbox
 from .librarian import Librarian, PromotionRejected
 from .rules import make_labeler
 
@@ -81,12 +81,20 @@ def _predict(hypothesis: Dict[str, Any], cases: List[Case], **sandbox_opts) -> L
         return [labeler(c["events"]) for c in cases]
     if kind == "code":
         return sandbox.run_code(hypothesis["source"], cases, **sandbox_opts)
+    if kind == "composed":
+        # Invented primitives are LLM-generated -> sandbox, never in-process.
+        source = primitives.compile_composed(hypothesis)
+        return sandbox.run_code(source, cases, **sandbox_opts)
     raise ValueError(f"unknown hypothesis kind: {kind!r}")
 
 
-def _program_bits(hypothesis: Dict[str, Any]) -> float:
-    if hypothesis.get("kind") == "rule":
+def _program_bits(hypothesis: Dict[str, Any],
+                  known_primitives: frozenset = frozenset()) -> float:
+    kind = hypothesis.get("kind")
+    if kind == "rule":
         return mdl.program_bits_spec(hypothesis.get("params", {}))
+    if kind == "composed":
+        return primitives.program_bits_composed(hypothesis, known_primitives)
     return mdl.program_bits_code(hypothesis["source"])
 
 
@@ -95,8 +103,13 @@ def _program_bits(hypothesis: Dict[str, Any]) -> float:
 # --------------------------------------------------------------------------- #
 def evaluate(hypothesis: Dict[str, Any], train: List[Case], test: List[Case], *,
              run_threshold: float = DEFAULT_RUN_THRESHOLD_BITS,
+             known_primitives: frozenset = frozenset(),
              **sandbox_opts) -> Dict[str, Any]:
-    """Score a hypothesis on the holdout. Returns the verdict (no promotion)."""
+    """Score a hypothesis on the holdout. Returns the verdict (no promotion).
+
+    ``known_primitives`` are invented predicates already in the library; a composed
+    hypothesis reusing them pays only a pointer, not their full description length.
+    """
     try:
         train_pred = _predict(hypothesis, train, **sandbox_opts)
         test_pred = _predict(hypothesis, test, **sandbox_opts)
@@ -111,7 +124,7 @@ def evaluate(hypothesis: Dict[str, Any], train: List[Case], test: List[Case], *,
     train_true = [c["outcome"] for c in train]
     test_true = [c["outcome"] for c in test]
     result = mdl.score(train_true, train_pred, test_true, test_pred,
-                       _program_bits(hypothesis))
+                       _program_bits(hypothesis, known_primitives))
     accept = result["bits_saved"] >= run_threshold
     result.update({
         "decision": "accept" if accept else "reject",
@@ -146,26 +159,65 @@ def _to_library_entry(hypothesis: Dict[str, Any], verdict: Dict[str, Any],
     return entry
 
 
+def _promote_primitives(hypothesis: Dict[str, Any], verdict: Dict[str, Any],
+                        librarian: Librarian, known_primitives: frozenset, *,
+                        level_origin: Optional[str], run_id: Optional[str],
+                        investigator: Optional[str]) -> List[Dict[str, Any]]:
+    """Admit the freshly-invented predicates to the library as reusable vocabulary."""
+    promoted = []
+    for name in primitives.new_primitive_names(hypothesis, known_primitives):
+        entry = {
+            "name": name,
+            "kind": "primitive",
+            "description": (f"Invented predicate {name}(events, ...) — "
+                            f"{hypothesis.get('description', '')}").strip(),
+            "program": hypothesis["primitives"][name],
+            "mdl": {"bits_saved": verdict["bits_saved"],
+                    "compresses": f"{level_origin or 'data'} outcomes (holdout)",
+                    "score": {k: verdict.get(k) for k in
+                              ("l_null", "program_bits", "l_data_given_h", "test_accuracy")}},
+            "provenance": {"run_id": run_id, "investigator": investigator,
+                           "level_origin": level_origin, "evaluated_on": "holdout"},
+        }
+        try:
+            record = librarian.promote(entry)
+            promoted.append({"id": record["id"], "version": record["version"],
+                             "commit": record.get("commit")})
+        except PromotionRejected as exc:
+            promoted.append({"name": name, "rejected": str(exc)})
+    return promoted
+
+
 def adjudicate(hypothesis: Dict[str, Any], train: List[Case], test: List[Case], *,
                librarian: Optional[Librarian] = None,
                run_threshold: float = DEFAULT_RUN_THRESHOLD_BITS,
+               known_primitives: frozenset = frozenset(),
                level_origin: Optional[str] = None,
                run_id: Optional[str] = None,
                investigator: Optional[str] = None,
                **sandbox_opts) -> Dict[str, Any]:
     """Evaluate and, if accepted and a librarian is given, attempt promotion."""
-    verdict = evaluate(hypothesis, train, test, run_threshold=run_threshold, **sandbox_opts)
+    verdict = evaluate(hypothesis, train, test, run_threshold=run_threshold,
+                       known_primitives=known_primitives, **sandbox_opts)
     verdict["promoted"] = False
     if verdict["decision"] == "accept" and librarian is not None:
-        entry = _to_library_entry(hypothesis, verdict, level_origin=level_origin,
-                                  run_id=run_id, investigator=investigator)
-        try:
-            record = librarian.promote(entry)
-            verdict["promoted"] = True
-            verdict["promotion"] = {"id": record["id"], "version": record["version"],
-                                    "commit": record.get("commit")}
-        except PromotionRejected as exc:
-            verdict["promotion"] = {"rejected": str(exc)}
+        if hypothesis.get("kind") == "composed":
+            # The abstraction worth keeping is the invented primitive, not the rule.
+            promos = _promote_primitives(hypothesis, verdict, librarian, known_primitives,
+                                         level_origin=level_origin, run_id=run_id,
+                                         investigator=investigator)
+            verdict["promoted"] = any("id" in p for p in promos)
+            verdict["promotion"] = {"primitives": promos}
+        else:
+            entry = _to_library_entry(hypothesis, verdict, level_origin=level_origin,
+                                      run_id=run_id, investigator=investigator)
+            try:
+                record = librarian.promote(entry)
+                verdict["promoted"] = True
+                verdict["promotion"] = {"id": record["id"], "version": record["version"],
+                                        "commit": record.get("commit")}
+            except PromotionRejected as exc:
+                verdict["promotion"] = {"rejected": str(exc)}
     return verdict
 
 
@@ -176,9 +228,10 @@ def run(data_dir: str, level: str, seed: int, hypothesis: Dict[str, Any], *,
     """Load a level's holdout and adjudicate a hypothesis end-to-end."""
     train, test, _gt = load_split(data_dir, level, seed)
     lib = Librarian(library_root) if (promote and library_root) else None
+    known = lib.known_primitive_names() if lib else frozenset()
     return adjudicate(hypothesis, train, test, librarian=lib,
-                      run_threshold=run_threshold, level_origin=level,
-                      run_id=f"{level}_seed{seed}", **sandbox_opts)
+                      run_threshold=run_threshold, known_primitives=known,
+                      level_origin=level, run_id=f"{level}_seed{seed}", **sandbox_opts)
 
 
 # --------------------------------------------------------------------------- #
@@ -205,9 +258,10 @@ def _main(argv=None) -> int:
     if args.dataset:
         train, test, _gt = load_dataset(args.dataset)
         lib = Librarian(args.library) if args.promote else None
+        known = lib.known_primitive_names() if lib else frozenset()
         verdict = adjudicate(hypothesis, train, test, librarian=lib,
-                             run_threshold=args.threshold, level_origin=args.dataset,
-                             run_id=args.dataset)
+                             run_threshold=args.threshold, known_primitives=known,
+                             level_origin=args.dataset, run_id=args.dataset)
     else:
         if not args.level:
             p.error("provide --level (bench) or --dataset (your own folder)")
@@ -223,7 +277,13 @@ def _main(argv=None) -> int:
         print(f"  L_data|H   : {verdict['l_data_given_h']:.2f}")
         print(f"test_acc     : {verdict['test_accuracy']:.3f}   "
               f"(train_acc {verdict['train_accuracy']:.3f})")
-    if verdict.get("promoted"):
+    if "promotion" in verdict and "primitives" in verdict["promotion"]:
+        for p in verdict["promotion"]["primitives"]:
+            if "id" in p:
+                print(f"primitive    : promoted {p['id']} (v{p['version']}, commit {p.get('commit')})")
+            else:
+                print(f"primitive    : rejected {p.get('name')} — {p.get('rejected')}")
+    elif verdict.get("promoted"):
         promo = verdict["promotion"]
         print(f"promoted     : {promo['id']} (v{promo['version']}, commit {promo.get('commit')})")
     elif "promotion" in verdict and "rejected" in verdict["promotion"]:
