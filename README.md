@@ -212,6 +212,42 @@ invention, both verified blind on the holdout).
 > primitives without being handed them and sweeping over a family of held-out tasks
 > — the DreamCoder-style design.
 
+### Flagship — a hard grammar, invented once and transferred
+
+The strongest single run. `data/grammar_hard` plants a **context-free grammar**: a
+trace is `accept` iff its denoised bracket string is (1) a valid **Dyck-2 word**
+(two bracket types, properly typed-nested), (2) has **maximum nesting depth exactly
+3**, and (3) has **equal numbers of round and square pairs**. The hard negatives
+satisfy two of the three, so every partial hypothesis is wrong on a chunk of the
+data — and no fixed-grammar predicate can express nesting at all (it needs a stack).
+
+Two independent investigator runs — one interactive, one headless (`claude -p`) —
+recovered the *same* hidden grammar from the train view alone, each verified blind
+on a 2000-case holdout, converging by **different search paths** (residual-chasing
+vs a decision-tree feature sweep). Recovery that reproduces across independent runs
+is induction, not recall. The interactive run's compression climbed as the theory
+approached the truth: nesting-only **+100** → nesting+depth **+362** → full **+872**.
+
+Then the payoff (`python -m rule_induction.demo_grammar_transfer`): the recogniser,
+made **parametric** — `typed_nest_balanced(events, pairs, depth)` — is invented on
+parentheses, then *reused* on a different alphabet (HTML-ish `div`/`span` tags) by
+supplying new parameters:
+
+```
+A · INVENT on parentheses    : acc 1.000   bits_saved +707    L_program 1292
+B · REUSE  on div/span tags   : acc 1.000   bits_saved +1957   L_program   42
+```
+
+The pushdown recogniser cost **1292 bits to invent, 42 to reuse** — a 30× collapse.
+One hard, context-free abstraction now covers parentheses, HTML tags, BEGIN/END
+blocks: **invention, analogy, and amortization in a single result**, all judged by
+compression on the holdout.
+
+> **Honest note.** An expensive abstraction only clears MDL with enough evidence —
+> at small *n* even the *correct* grammar is rejected for costing more than it saves
+> (−121 bits at 960 holdout cases). That is the anchor working, and precisely why
+> reuse matters: the parser pays for itself once, then transfers for almost nothing.
+
 ## What's built so far
 
 Following the plan's build order (Section 8), the two foundations are in place:
@@ -395,6 +431,7 @@ rule_induction/          # core library (stdlib only)
   dataset.py             # holdout split + on-disk layout
   generate.py            # generator CLI  (python -m rule_induction.generate)
   apilog.py              # realistic REST-API log generator -> a --dataset (gateway policy)
+  grammar_hard.py        # HARD context-free grammar dataset (typed nesting + depth + balance)
   mdl.py                 # MDL scorer (prequential plug-in code, holdout)
   sandbox.py             # hostile-until-clean runner for code-hypotheses
   arbiter.py             # the arbiter + CLI (python -m rule_induction.arbiter)
@@ -405,6 +442,7 @@ rule_induction/          # core library (stdlib only)
   present.py             # investigator's train-only view + residuals (the agent reads this)
   librarian.py           # the persistent store + CLI (python -m rule_induction.librarian)
   demo_invent.py         # demo: invent a primitive, then reuse it cheaply (two-part MDL)
+  demo_grammar_transfer.py # demo: a hard grammar invented once, transferred across alphabets
 .claude/skills/
   synthetic-data-generator/SKILL.md
   arbiter/SKILL.md

@@ -1,0 +1,6 @@
+{
+  "kind": "code",
+  "source": "def predict(events):\n    om = dict(wp=\"a\", wq=\"A\", kx=\"b\", kz=\"B\")\n    pair = dict(a=\"A\", b=\"B\")\n    s = [om[e[\"type\"]] for e in events if e[\"type\"] in om]\n    st = []\n    md = 0\n    na = 0\n    nb = 0\n    for x in s:\n        if x == \"a\" or x == \"b\":\n            if x == \"a\":\n                na += 1\n            else:\n                nb += 1\n            st.append(x)\n            if len(st) > md:\n                md = len(st)\n        else:\n            if (not st) or pair[st[-1]] != x:\n                return \"reject\"\n            st.pop()\n    if st:\n        return \"reject\"\n    if na == nb and md == 3:\n        return \"accept\"\n    return \"reject\"\n",
+  "name": "grammar_hard_dyck2_depth3_balanced",
+  "description": "Accept iff the denoised bracket string (wp/wq=type-A open/close, kx/kz=type-B open/close; n1/n2 ignored) is a valid Dyck-2 word with equal numbers of A-pairs and B-pairs and maximum nesting depth exactly 3."
+}
